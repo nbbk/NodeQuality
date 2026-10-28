@@ -2,6 +2,16 @@
 
 ## 只运行测试（无需部署网站）
 
+### 已安装新版工具箱：最短命令
+
+```bash
+sudo nb nq
+```
+
+需要已安装包含 `nq` 功能的新版 [vps-toolkit main/testing](https://github.com/nbbk/vps-toolkit)；**当前稳定版 2.3.4 尚不支持此子命令**。它复用固定来源和 SHA-256 校验，保留运行确认，默认不上传；`sudo nb --dry-run nq` 可只预览。主分支合并不等于已发布新版稳定安装包。
+
+### 不安装工具箱：独立运行
+
 在装有 **Git** 的 **Linux x86_64 / aarch64 VPS** 上，一条命令下载项目并进入交互测试选项：
 
 ```bash
