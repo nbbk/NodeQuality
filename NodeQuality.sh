@@ -1,13 +1,22 @@
 #!/bin/bash
 
-current_time="$(date +%Y_%m_%d_%H_%M_%S)"
-work_dir=".nodequality$current_time"
-bench_os_url="https://github.com/LloydAsp/NodeQuality/releases/download/v0.0.2/BenchOs.tar.gz"
-raw_file_prefix="https://raw.githubusercontent.com/LloydAsp/NodeQuality/refs/heads/main"
-
-if uname -m | grep -Eq 'arm|aarch64'; then
-    bench_os_url="https://github.com/LloydAsp/NodeQuality/releases/download/v0.0.2/BenchOs-arm.tar.gz"
-fi
+# NB NodeQuality modifications, 2026-10-28. Derived from LloydAsp/NodeQuality.
+# Original license and attribution are retained in LICENSE and NOTICE.md.
+upstream_commit="a92fca6c0067df29ddd03fdc2fee6f3000f64545"
+tool_version="0.1.0-dev"
+current_time="$(date -u +%Y_%m_%d_%H_%M_%S)"
+work_base="$PWD"
+work_dir=""
+report_dir=""
+upload_url=""
+consent_upload=0
+mount_proc=0
+mount_sys=0
+mount_dev=0
+bench_os_url=""
+bench_os_sha256=""
+nexttrace_url=""
+nexttrace_sha256=""
 
 header_info_filename=header_info.log
 ip_quality_filename=ip_quality.log
@@ -81,29 +90,14 @@ function start_ascii() {
 ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝ ╚══▀▀═╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝   ╚═╝      ╚═╝   
 
 EOF
-    if [[ "$lang" == "en" ]]; then
-        cat <<'EOF'
-Benchmark script for server, collects basic hardware information, IP quality and network quality
-
-The benchmark will be performed in a temporary system, and all traces will be deleted after that.
-Therefore, it has no impact on the original environment and supports almost all linux systems.
-
-Author: Lloyd@nodeseek.com
-Github: github.com/LloydAsp/NodeQuality
-Command: bash <(curl -sL https://run.NodeQuality.com)
+    cat <<'EOF'
+NB NodeQuality — locally retained VPS benchmark reports
+Based on Lloyd@nodeseek.com / github.com/LloydAsp/NodeQuality (AGPL-3.0).
+BenchOS uses chroot, NOT a security sandbox. Tests run as root, access host
+resources and contact third-party services. Review code before running.
+Reports may contain IP addresses and hardware/network identifiers.
+Local reports are preserved; sharing requires explicit upload consent.
 EOF
-    else
-        cat <<'EOF'
-网络服务器的专业测评脚本，检测硬件质量、IP质量和网络质量
-
-脚本测试是纯净的，在临时系统中执行，之后所有的痕迹都会被删除
-因此，它不会对原始环境产生任何影响，并且支持几乎所有 Linux 系统
-
-作者：Lloyd@nodeseek.com
-仓库：github.com/LloydAsp/NodeQuality
-命令：bash <(curl -sL https://run.NodeQuality.com)
-EOF
-    fi
     echo -e "\033[0m"
 }
 
@@ -139,101 +133,112 @@ function _green_bold() {
     echo -e "\033[1;32m$1\033[0m"
 }
 
+function usage() {
+    cat <<'EOF'
+Usage: bash NodeQuality.sh [-4|-6] [-E] [-D existing-directory]
+       [--upload-url https://your-host/api/v1/reports --consent-upload]
+Default: retain local reports; never upload to the original NodeQuality API.
+Upload shares potentially identifying reports with the configured server.
+EOF
+}
+
 function get_opts(){
-    while getopts "D:d:46Ee" opt; do
-        case $opt in
-            4)
-                if [[ "$opt_ipv" == "-6" ]]; then
-                    opt_ipv=""
-                else
-                    opt_ipv="-4"
-                fi
-                ;;
-            6)
-                if [[ "$opt_ipv" == "-4" ]]; then
-                    opt_ipv=""
-                else
-                    opt_ipv="-6"
-                fi
-                ;;
-            D|d)
-                local opt_dir="${OPTARG%/}"
-                if [[ ! -d "$opt_dir" || ! -r "$opt_dir" || ! -w "$opt_dir" ]]; then
-                    echo "$(L err03)"
-                    exit 1
-                else
-                    work_dir="${opt_dir}/${work_dir}"
-                fi
-                ;;
-            E|e)
-                lang="en"
-                opt_lang="-E"
-                ;;
-            \?) 
-                echo "$(L err02)"
-                ;;
+    while (( $# )); do
+        case "$1" in
+            -4|-6) opt_ipv="$1" ;;
+            -E|-e) lang="en"; opt_lang="-E" ;;
+            -D|-d)
+                (( $# >= 2 )) || return 2
+                [[ -d "$2" && -r "$2" && -w "$2" ]] || return 2
+                work_base="$(cd -- "$2" && pwd -P)" || return
+                shift ;;
+            --upload-url)
+                (( $# >= 2 )) || return 2
+                upload_url="$2"; shift ;;
+            --consent-upload) consent_upload=1 ;;
+            -h|--help) usage; return 10 ;;
+            *) echo "Unsupported argument: $1" >&2; return 2 ;;
         esac
+        shift
     done
-}
-
-function pre_init(){
-    mkdir -p "$work_dir"
-    cd $work_dir
-    work_dir="$(pwd)"
-}
-
-function pre_cleanup(){
-    # incase interupted last time
-    clear_mount
-    if [[ "$work_dir" == *"nodequality"* ]]; then
-        rm -rf "${work_dir}"/*
-    else
-        echo "$(L err01)"
-        exit 1
+    if [[ -n "$upload_url" ]]; then
+        [[ "$upload_url" =~ ^https://[^/?#@[:space:]]+(/[^[:space:]#]*)?$ ]] || {
+            echo "Upload requires an HTTPS URL without credentials or fragments." >&2; return 2;
+        }
+        (( consent_upload == 1 )) || {
+            echo "Sharing requires --consent-upload; reports can identify this server." >&2; return 2;
+        }
+    elif (( consent_upload )); then
+        echo "--consent-upload requires --upload-url." >&2; return 2
     fi
 }
 
-function clear_mount(){
-    swapoff $work_dir/swap 2>/dev/null
+function select_arch(){
+    [[ "$(uname -s)" == Linux ]] || { echo "Linux required." >&2; return 1; }
+    case "$(uname -m)" in
+        x86_64)
+            bench_os_url="https://github.com/LloydAsp/NodeQuality/releases/download/v0.0.2/BenchOs.tar.gz"
+            bench_os_sha256="5f844e73941c3623175c5cdc16b01db34c155d0d1bd9b0cf71f3d72e8b1148e1"
+            nexttrace_url="https://github.com/nxtrace/NTrace-core/releases/download/v1.7.5/nexttrace_linux_amd64"
+            nexttrace_sha256="7d7fa3bdd967494d1c051766696dea753bc6f4a1d95c2016fdfa078cf1894ff6" ;;
+        aarch64|arm64)
+            bench_os_url="https://github.com/LloydAsp/NodeQuality/releases/download/v0.0.2/BenchOs-arm.tar.gz"
+            bench_os_sha256="a4dd4e55b129157a02dab437b78e41b5797a7a79a0f0b7febdecab8eb2a312c7"
+            nexttrace_url="https://github.com/nxtrace/NTrace-core/releases/download/v1.7.5/nexttrace_linux_arm64"
+            nexttrace_sha256="820a736c60aca52683b5a4c7fa256d7a4248db37f28f2c16ff6daf76a8b0ee87" ;;
+        *) echo "Unsupported architecture; only x86_64 and aarch64 are supported." >&2; return 1 ;;
+    esac
+}
 
-    umount $work_dir/BenchOs/proc/ 2> /dev/null
-    umount $work_dir/BenchOs/sys/ 2> /dev/null
-    umount -R $work_dir/BenchOs/dev/ 2> /dev/null
+function pre_init(){
+    umask 077
+    work_dir="$(mktemp -d "$work_base/.nodequality-$current_time-XXXXXX")" || return
+    report_dir="$work_dir/reports"
+    mkdir -m 700 -- "$report_dir"
+}
+
+function clear_mount(){
+    local failed=0
+    if (( mount_dev )); then
+        umount -R "$work_dir/BenchOs/dev" && mount_dev=0 || failed=1
+    fi
+    if (( mount_sys )); then
+        umount "$work_dir/BenchOs/sys" && mount_sys=0 || failed=1
+    fi
+    if (( mount_proc )); then
+        umount "$work_dir/BenchOs/proc" && mount_proc=0 || failed=1
+    fi
+    return "$failed"
+}
+
+function fetch_file(){
+    curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 20 --max-time 600 --output "$2" "$1"
 }
 
 function load_bench_os(){
-    cd $work_dir
-    rm -rf BenchOs
-
-    curl "-L#o" BenchOs.tar.gz $bench_os_url
-    tar -xzf BenchOs.tar.gz     
-    cd $work_dir/BenchOs
-
-    mount -t proc /proc proc/
-    mount --bind /sys sys/
-    mount --rbind /dev dev/
-    mount --make-rslave dev
-
-    rm etc/resolv.conf 2>/dev/null
-    cp /etc/resolv.conf etc/resolv.conf
+    fetch_file "$bench_os_url" "$work_dir/BenchOs.tar.gz" || return
+    printf '%s  %s\n' "$bench_os_sha256" "$work_dir/BenchOs.tar.gz" | sha256sum -c - || return
+    tar -xzf "$work_dir/BenchOs.tar.gz" -C "$work_dir" || return
+    [[ -d "$work_dir/BenchOs" && ! -L "$work_dir/BenchOs" ]] || return 1
+    mount -t proc /proc "$work_dir/BenchOs/proc" || return
+    mount_proc=1
+    mount --bind /sys "$work_dir/BenchOs/sys" || return
+    mount_sys=1
+    mount --rbind /dev "$work_dir/BenchOs/dev" || return
+    mount_dev=1
+    mount --make-rslave "$work_dir/BenchOs/dev" || return
+    rm -f -- "$work_dir/BenchOs/etc/resolv.conf" || return
+    cp -- /etc/resolv.conf "$work_dir/BenchOs/etc/resolv.conf"
 }
 
 function chroot_run(){
-    chroot $work_dir/BenchOs /bin/bash -c "$*"
-}
-
-function load_part(){
-    # gb5-test.sh, swap part
-    . <(curl -sL "$raw_file_prefix/part/swap.sh")
-}
-
-function load_3rd_program(){
-    chroot_run wget https://github.com/nxtrace/NTrace-core/releases/download/v1.3.7/nexttrace_linux_amd64 -qO /usr/local/bin/nexttrace
-    chroot_run chmod u+x /usr/local/bin/nexttrace
+    env -u NQ_UPLOAD_KEY chroot "$work_dir/BenchOs" /bin/bash -c "$*"
 }
 
 function run_header(){
-    chroot_run bash <(curl -Ls "$raw_file_prefix/part/header.sh")
+    printf 'NB NodeQuality %s\nUTC: %s\nOriginal: LloydAsp/NodeQuality @ %s\n' \
+        "$tool_version" "$(date -u +%FT%TZ)" "$upstream_commit"
 }
 
 function detect_virt() {
@@ -408,134 +413,230 @@ function run_HardwareQuality(){
     [[ "$run_hardware_quality_test" =~ ^[Vv]$ ]] && params=" -V"
     pre_fetch_info # HQ预处理
     payload=$(declare -p osinfo meminfo diskinfo) # HQ预处理
-    curl -Ls https://Hardware.Check.Place | chroot_run "env NQENV=$(printf '%q' "$payload") bash -s -- $opt_lang $params -y -o /result/$hardware_quality_json_filename" # HQ预处理
+    fetch_file https://Hardware.Check.Place "$work_dir/hardware.sh" || return
+    cat "$work_dir/hardware.sh" | chroot_run "env NQENV=$(printf '%q' "$payload") bash -s -- $opt_lang $params -y -o /result/$hardware_quality_json_filename" # HQ预处理
     # 原始语句为：chroot_run bash <(curl -Ls https://Hardware.Check.Place) $opt_lang -y -o /result/$hardware_quality_json_filename
 }
 
 
 function run_ip_quality(){
-    chroot_run bash <(curl -Ls https://IP.Check.Place) $opt_ipv $opt_lang -y -o /result/$ip_quality_json_filename
+    fetch_file https://IP.Check.Place "$work_dir/ip.sh" || return
+    chroot_run "bash -s -- $opt_ipv $opt_lang -y -o /result/$ip_quality_json_filename" < "$work_dir/ip.sh"
+}
+
+function load_nexttrace(){
+    fetch_file "$nexttrace_url" "$work_dir/nexttrace" || return
+    [[ -s "$work_dir/nexttrace" ]] || return 1
+    printf '%s  %s\n' "$nexttrace_sha256" "$work_dir/nexttrace" | sha256sum -c - || return
+    mkdir -p -- "$work_dir/BenchOs/usr/local/bin" || return
+    local staged
+    staged="$(mktemp "$work_dir/BenchOs/usr/local/bin/.nexttrace-XXXXXX")" || return
+    cp -- "$work_dir/nexttrace" "$staged" || return
+    chmod 755 -- "$staged" || return
+    mv -fT -- "$staged" "$work_dir/BenchOs/usr/local/bin/nexttrace"
+}
+
+function require_nexttrace(){
+    # Do not let the current NetQuality fallback execute a plaintext installer.
+    chroot_run 'command -v nexttrace >/dev/null 2>&1' || {
+        echo "NextTrace is absent in BenchOS; refusing NetQuality's unverified installer. Supply an audited BenchOS with architecture-correct NextTrace before running network/route tests." >&2
+        return 1
+    }
 }
 
 function run_net_quality(){
+    require_nexttrace || return
     local params=""
     [[ "$run_net_quality_test" =~ ^[Ll]$ ]] && params=" -L"
-    chroot_run bash <(curl -Ls https://Net.Check.Place) $opt_ipv $opt_lang $params -y -o /result/$net_quality_json_filename
+    fetch_file https://Net.Check.Place "$work_dir/net.sh" || return
+    chroot_run "bash -s -- $opt_ipv $opt_lang $params -y -o /result/$net_quality_json_filename" < "$work_dir/net.sh"
 }
 
 function run_net_trace(){
-    chroot_run bash <(curl -Ls https://Net.Check.Place) $opt_ipv $opt_lang -R -n -S 123 -o /result/$backroute_trace_json_filename
+    require_nexttrace || return
+    fetch_file https://Net.Check.Place "$work_dir/trace.sh" || return
+    chroot_run "bash -s -- $opt_ipv $opt_lang -R -n -S 123 -o /result/$backroute_trace_json_filename" < "$work_dir/trace.sh"
 }
 
-uploadAPI="https://api.nodequality.com/api/v1/record"
+function preserve_result(){
+    [[ -n "$work_dir" && -d "$work_dir/BenchOs/result" ]] || return 0
+    cp -a -- "$work_dir/BenchOs/result/." "$report_dir/"
+}
+
 function upload_result(){
-
-    chroot_run zip -j - "/result/*" > $work_dir/result.zip
-
-    base64 $work_dir/result.zip | curl -X POST  --data-binary @- $uploadAPI
-
-    echo
-}
-
-function post_cleanup(){
-    chroot_run umount -R /dev &> /dev/null
-    clear_mount
-
-    post_check_mount
-
-    rm -rf $work_dir/BenchOs
-
-    if [[ "$work_dir" == *"nodequality"* ]]; then
-        rm -rf "${work_dir}"/
-    else
-        echo "$(L err01)"
-        exit 1
+    [[ -n "$upload_url" ]] || return 0
+    (( consent_upload == 1 )) || return 2
+    [[ -n "${NQ_UPLOAD_KEY:-}" ]] || { echo "NQ_UPLOAD_KEY is required for sharing." >&2; return 2; }
+    printf 'Sharing RAW reports from %s (IP/hardware/network identifiers may be included; no automatic redaction).\n' "$report_dir" >&2
+    local review_file review_name review_suffix
+    for review_name in header_info hardware_quality ip_quality net_quality backroute_trace; do
+        for review_suffix in log json; do
+            review_file="$report_dir/$review_name.$review_suffix"
+            [[ ! -f "$review_file" ]] || printf '  %s\n' "${review_file##*/}" >&2
+        done
+    done
+    if [[ -t 0 ]]; then
+        local confirmation
+        read -r -p 'Inspect these local files first. Type SHARE to upload, anything else cancels: ' confirmation || return 1
+        [[ "$confirmation" == SHARE ]] || { echo 'Sharing cancelled; local reports retained.' >&2; return 0; }
     fi
-
-    exit 1
-}
-
-function sig_cleanup(){
-    trap '' INT TERM SIGHUP EXIT
-    _green_bold "$(L cleanup)"
-    post_cleanup
+    command -v python3 >/dev/null || { echo "Python3 is required only for optional sharing." >&2; return 1; }
+    python3 - "$report_dir" <<'PY'
+import datetime, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+names = ('header_info', 'hardware_quality', 'ip_quality', 'net_quality', 'backroute_trace')
+sections = []
+for name in names:
+    for suffix in ('.log', '.json'):
+        path = root / (name + suffix)
+        if path.is_file():
+            content = path.read_text(encoding='utf-8', errors='replace')
+            if len(content) > 262144:
+                raise SystemExit('A report section exceeds 262144 characters; local reports are retained.')
+            sections.append({'title': path.name, 'content': content})
+payload = json.dumps({'schema_version': 1, 'title': 'NB NodeQuality', 'sections': sections, 'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'tool_version': '0.1.0-dev', 'upstream_commit': 'a92fca6c0067df29ddd03fdc2fee6f3000f64545'}, ensure_ascii=False).encode()
+if len(payload) > 1024 * 1024:
+    raise SystemExit('Report exceeds 1 MiB upload limit; local reports are retained.')
+(root / 'share-payload.json').write_bytes(payload)
+PY
+    local status=$?
+    (( status == 0 )) || return "$status"
+    # Keep the key out of process arguments and reject header injection.
+    [[ "$NQ_UPLOAD_KEY" != *$'\n'* && "$NQ_UPLOAD_KEY" != *$'\r'* ]] || return 2
+    printf 'Authorization: Bearer %s\n' "$NQ_UPLOAD_KEY" > "$report_dir/.upload-header" || return
+    # No redirects: never forward private report data to a different endpoint.
+    curl --fail --show-error --silent --proto '=https' --connect-timeout 20 \
+        --max-time 120 --header "@$report_dir/.upload-header" \
+        --header 'Content-Type: application/json' --data-binary "@$report_dir/share-payload.json" \
+        --output "$report_dir/share-response.json" "$upload_url"
+    status=$?
+    rm -f -- "$report_dir/.upload-header"
+    (( status == 0 )) || return "$status"
+    python3 - "$report_dir/share-response.json" <<'PY'
+import json, sys
+from urllib.parse import urlsplit
+response = json.load(open(sys.argv[1]))
+url = response.get('url', '')
+if urlsplit(url).scheme != 'https' or any(ord(c) < 32 or ord(c) == 127 for c in url):
+    raise SystemExit('Server did not return a safe HTTPS share URL. Inspect private response locally.')
+print('Share URL:', url)
+print('Deletion token and expiry are saved in the private local share-response.json.')
+PY
 }
 
 function post_check_mount(){
-    if mount | grep nodequality$current_time ; then
-        echo "$(L clean_fail)" | tee $work_dir/error.log >&2
-        exit
-    fi
+    # mountinfo encodes whitespace/backslashes; decode before comparing exact paths.
+    local id parent device root target rest decoded
+    while read -r id parent device root target rest; do
+        printf -v decoded '%b' "$target"
+        if [[ "$decoded" == "$work_dir" || "$decoded" == "$work_dir/"* ]]; then
+            echo "Mount remains at $decoded; refusing deletion." >&2
+            return 1
+        fi
+    done < /proc/self/mountinfo
 }
 
+function post_cleanup(){
+    [[ -n "$work_dir" ]] || return 0
+    rm -f -- "$report_dir/.upload-header"
+    # Never delete a rootfs with uncertain mount state or an unsaved report.
+    preserve_result || { echo "Report copy failed; retained $work_dir" >&2; return 1; }
+    clear_mount || { echo "Unmount failed; retained $work_dir for recovery." >&2; return 1; }
+    post_check_mount || return
+    rm -rf -- "$work_dir/BenchOs" || return
+    rm -f -- "$work_dir/BenchOs.tar.gz"
+    printf 'Local reports retained: %s\n' "$report_dir"
+}
+
+function sig_cleanup(){
+    local status="$1"
+    trap - EXIT INT TERM HUP
+    post_cleanup || { (( status != 0 )) || status=1; }
+    exit "$status"
+}
 
 function ask_question(){
     local yellow='\033[1;33m'  # Set yellow color
     local reset='\033[0m'      # Reset to default color
 
     echo -en "${yellow}$(L ask_hq)${reset}"
-    read run_hardware_quality_test
+    read -r run_hardware_quality_test || return 1
     run_hardware_quality_test=${run_hardware_quality_test:-y}
 
     echo -en "${yellow}$(L ask_iq)${reset}"
-    read run_ip_quality_test
+    read -r run_ip_quality_test || return 1
     run_ip_quality_test=${run_ip_quality_test:-y}
 
     echo -en "${yellow}$(L ask_nq)${reset}"
-    read run_net_quality_test
+    read -r run_net_quality_test || return 1
     run_net_quality_test=${run_net_quality_test:-y}
 
     echo -en "${yellow}$(L ask_bt)${reset}"
-    read run_net_trace_test
+    read -r run_net_trace_test || return 1
     run_net_trace_test=${run_net_trace_test:-y}
 }
 
 function main(){
-    trap 'sig_cleanup' INT TERM SIGHUP EXIT
+    set -o pipefail
+    select_arch || return
+    (( EUID == 0 )) || { echo "Root is required for BenchOS mounts/chroot." >&2; return 1; }
+    local dependency
+    for dependency in curl sha256sum tar mount umount chroot mktemp cp chmod mv env; do
+        command -v "$dependency" >/dev/null || { echo "Missing: $dependency" >&2; return 1; }
+    done
+    trap 'sig_cleanup $?' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
 
     start_ascii
 
-    ask_question
+    ask_question || return
 
     _green_bold "$(L cleanup_before)"
-    pre_init
-    pre_cleanup
+    pre_init || return
     _green_bold "$(L loadbench)"
-    load_bench_os
-
-    load_part
-    load_3rd_program
+    load_bench_os || return
+    if [[ "$run_net_quality_test" =~ ^[YyLl]$ || "$run_net_trace_test" =~ ^[Yy]$ ]]; then
+        load_nexttrace || return
+    fi
 
     _green_bold "$(L basicinfo)"
 
-    result_directory=$work_dir/BenchOs/result
-    mkdir -p $result_directory
-    run_header > $result_directory/$header_info_filename
+    result_directory="$work_dir/BenchOs/result"
+    mkdir -p -- "$result_directory" || return
+    run_header > "$result_directory/$header_info_filename" || return
 
     if [[ "$run_hardware_quality_test" =~ ^[YyFfVv]$ ]]; then
         _green_bold "$(L run_hq)"
-        run_HardwareQuality | tee $result_directory/$hardware_quality_filename
+        run_HardwareQuality | tee "$result_directory/$hardware_quality_filename" || return
     fi
 
     if [[ "$run_ip_quality_test" =~ ^[Yy]$ ]]; then
         _green_bold "$(L run_iq)"
-        run_ip_quality | tee $result_directory/$ip_quality_filename
+        run_ip_quality | tee "$result_directory/$ip_quality_filename" || return
     fi
 
     if [[ "$run_net_quality_test" =~ ^[YyLl]$ ]]; then
         _green_bold "$(L run_nq)"
-        run_net_quality | tee $result_directory/$net_quality_filename
+        run_net_quality | tee "$result_directory/$net_quality_filename" || return
     fi
 
     if [[ "$run_net_trace_test" =~ ^[Yy]$ ]]; then
         _green_bold "$(L run_bt)"
-        run_net_trace | tee $result_directory/$backroute_trace_filename
+        run_net_trace | tee "$result_directory/$backroute_trace_filename" || return
     fi
 
-    upload_result
+    preserve_result || return
+    upload_result || return
     _green_bold "$(L cleanup_after)"
-    post_cleanup
+    return 0
 }
 
-get_opts "$@"
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    get_opts "$@"
+    status=$?
+    (( status != 10 )) || exit 0
+    (( status == 0 )) || exit "$status"
+    main
+fi

@@ -1,0 +1,22 @@
+{
+  "name": "nodequality-cloudflare-reports",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "scripts": {
+    "build": "python3 scripts/source.py",
+    "dev": "npm run build && wrangler dev --local",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "check": "node --check src/worker.js",
+    "deploy": "npm run build && npm run deploy:ci",
+    "build:ci": "npm run check && npm test",
+    "deploy:ci": "node scripts/check-deploy.mjs && wrangler deploy",
+    "deploy:dry-run": "npm run build && wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "4.154.0",
+    "miniflare": "4.20260730.0"
+  },
+  "packageManager": "npm@11.9.0"
+}

@@ -1,0 +1,31 @@
+services:
+  reports:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${LOCAL_PORT:-8080}:8080"
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set your HTTPS origin}
+      REPORT_UPLOAD_KEY: ${REPORT_UPLOAD_KEY:?Set a random 32+ character secret}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-1048576}
+      MAX_REPORTS: ${MAX_REPORTS:-10000}
+      UPLOADS_PER_HOUR: ${UPLOADS_PER_HOUR:-30}
+    volumes:
+      - reports:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  reports:

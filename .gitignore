@@ -1,1 +1,16 @@
 tmp/
+.nodequality-*/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+node_modules/
+.wrangler/
+share-response.json
+share-payload.json
+.upload-header
+
+client.env
+/MANIFEST.sha256
+/integration/*.patch

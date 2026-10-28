@@ -1,0 +1,48 @@
+name: Safe contracts
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cli-and-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Bash syntax
+        run: for file in NodeQuality.sh setup.sh part/*.sh tests/*.sh service/setup.sh cloudflare/setup.sh; do bash -n "$file"; done
+      - name: CLI mocks (no privileged benchmarks)
+        run: bash tests/cli-contract.sh
+      - name: Guided configuration tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Service unit tests
+        run: python3 -m unittest discover -s service/tests -v
+      - name: CLI to service schema contract
+        run: bash tests/cli-service-contract.sh
+      - name: Synthetic localhost HTTP smoke
+        run: python3 service/tests/smoke.py
+  cloudflare:
+    runs-on: ubuntu-latest
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    defaults:
+      run:
+        working-directory: cloudflare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build

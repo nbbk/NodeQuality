@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nodequality-reports",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": true,
+  "vars": {
+    "PUBLIC_BASE_URL": "https://reports.example.com",
+    "RETENTION_DAYS": "7",
+    "MAX_UPLOAD_BYTES": "1048576",
+    "MAX_REPORTS": "10000",
+    "UPLOADS_PER_HOUR": "30"
+  },
+  "d1_databases": [{"binding":"DB","database_name":"nodequality-reports","database_id":"00000000-0000-0000-0000-000000000000","migrations_dir":"migrations"}],
+  "assets": {"directory":"./public","binding":"ASSETS","run_worker_first":true},
+  "triggers": {"crons":["*/15 * * * *"]},
+  "observability": {"enabled":false}
+}

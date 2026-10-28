@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "title": "合成报告 / Synthetic report",
+  "sections": [
+    {"title": "hardware_quality.log", "content": "CPU: synthetic 4 cores\nMemory: 8 GiB\n"},
+    {"title": "ip_quality.log", "content": "IP: [REDACTED_IP]\nHost: [REDACTED_HOST]\n"},
+    {"title": "net_quality.json", "content": "{\"fixture\": true, \"throughput_mbps\": 100}"}
+  ],
+  "generated_at": "2026-10-28T00:00:00Z",
+  "tool_version": "synthetic-fixture",
+  "upstream_commit": "synthetic-not-a-real-commit"
+}
