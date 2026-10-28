@@ -1,5 +1,23 @@
 # NB NodeQuality（本地开发版）
 
+## 只运行测试（无需部署网站）
+
+在装有 **Git** 的 **Linux x86_64 / aarch64 VPS** 上，一条命令下载项目并进入交互测试选项：
+
+```bash
+git clone https://github.com/nbbk/NodeQuality.git && cd NodeQuality && sudo bash NodeQuality.sh
+```
+
+如果已经下载过，进入项目目录后直接运行：
+
+```bash
+sudo bash NodeQuality.sh
+```
+
+**不需要部署 Cloudflare 或 Docker，也不需要配置报告网站。默认只保存本地报告，不上传。** 脚本需要 root 权限和宿主基础命令（如 curl、tar、sha256sum、mount、chroot）；缺少依赖时会提示并退出。运行前请审阅源码；测试会产生 CPU、磁盘负载和网络流量。目前尚未完成真实 VPS 全流程验证，建议先在非重要机器上试。
+
+下面的部署向导仅用于需要自建在线分享服务或配置向导的场景，与直接测试命令分开。
+
 **双部署包入口：[Cloudflare / Docker 部署指南](DEPLOYMENT.md)**
 
 基于 [LloydAsp/NodeQuality](https://github.com/LloydAsp/NodeQuality) 的用户维护版本；原作者 Lloyd@nodeseek.com。保留原始 `LICENSE`（GNU AGPL v3）和致谢，修改说明见 [NOTICE.md](NOTICE.md)。维护仓库：[nbbk/NodeQuality](https://github.com/nbbk/NodeQuality)。
